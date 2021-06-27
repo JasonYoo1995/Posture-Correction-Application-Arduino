@@ -1,0 +1,163 @@
+#include <ArduinoBLE.h>
+#include <Arduino_LSM9DS1.h>
+
+
+// gyroscope setup(service and characteric)
+BLEService gyroscopeService("0000fff0-0000-1000-8000-00805f9b34fb");       
+BLECharacteristic gyroscopeChar("00002902-0000-1000-8000-00805f9b34fb",BLERead | BLENotify, 32, (1==1));
+
+
+// BLE Battery Service Characteristic
+BLEService batteryService("180F");
+BLEUnsignedCharCharacteristic batteryLevelChar("2A19",  // standard 16-bit characteristic UUID
+ BLERead | BLENotify); // remote clients will be able to get notifications if this characteristic changes
+
+int oldBatteryLevel = 0;  // last battery level reading from analog input
+long previousMillis = 0;  // last time the battery level was checked, in ms
+char buf[32]; // for gyroscope data send
+float x, y, z;  // gyroscope data
+float acc_x, acc_y, acc_z;
+float aca_x_buf[10];
+float acc_y_buf[10];
+float acc_z_buf[10];
+bool flag = true; //진동. acc_buf에 들어있는 값이 모두 threshold이상일 때 진동. true일 때 진동
+int turn = 0;
+void setup() {
+  Serial.begin(9600);    // initialize serial communication
+//  while (!Serial);
+
+  pinMode(LED_BUILTIN, OUTPUT); // initialize the built-in LED pin to indicate when a central is connected
+
+  // begin initialization
+  if (!BLE.begin()) {
+    Serial.println("starting BLE failed!");
+
+    while (1);
+  }
+  // init IMU.
+  if (!IMU.begin()) {
+    Serial.println("Failed to initialize IMU!");
+    while (1);
+  }
+
+  BLE.setLocalName("AHAP"); // 이름설정
+  BLE.setAdvertisedService(batteryService); // add the service UUID
+  batteryService.addCharacteristic(batteryLevelChar); // add the battery level characteristic
+  BLE.addService(batteryService); // Add the battery service
+  batteryLevelChar.writeValue(oldBatteryLevel); // set initial value for this characteristic
+
+  // gyroscope setup
+  BLE.setAdvertisedService(gyroscopeService);
+  gyroscopeService.addCharacteristic(gyroscopeChar); 
+  BLE.addService(gyroscopeService); 
+  gyroscopeChar.writeValue("0 0 0"); 
+
+  // 진동 모터
+  pinMode(11,OUTPUT); //진동모터 모듈에 연결된 11번 출력 설정
+
+  // start advertising
+  BLE.advertise();
+
+  Serial.println("Bluetooth device active, waiting for connections...");
+}
+
+void loop() {
+  // wait for a BLE central
+  BLEDevice central = BLE.central();
+
+  // if a central is connected to the peripheral:
+  if (central) {
+    Serial.print("Connected to central: ");
+    // print the central's BT address:
+    Serial.println(central.address());
+    // turn on the LED to indicate the connection:
+    digitalWrite(LED_BUILTIN, HIGH);
+
+    // check the battery level every 200ms
+    // while the central is connected:
+    while (central.connected()) {
+      long currentMillis = millis();
+      // if 200ms have passed, check the battery level:
+      if (currentMillis - previousMillis >= 200) {
+        previousMillis = currentMillis;
+        updateBatteryLevel();
+        updateGyroscope();
+      }
+    }
+    // when the central disconnects, turn off the LED:
+    digitalWrite(LED_BUILTIN, LOW);
+    Serial.print("Disconnected from central: ");
+    Serial.println(central.address());
+  }
+
+  //진동 모터
+  //세기에 따라 0~ 255까지 설정
+//  analogWrite(11, 150);
+//  delay(500);
+//  analogWrite(11, 0);
+}
+
+void updateBatteryLevel() {
+  /* Read the current voltage level on the A0 analog input pin.
+     This is used here to simulate the charge level of a battery.
+  */
+  int battery = analogRead(A0);
+  int batteryLevel = map(battery, 0, 1023, 0, 100);
+
+  if (batteryLevel != oldBatteryLevel) {      // if the battery level has changed
+    Serial.print("Battery Level % is now: "); // print it
+    Serial.println(batteryLevel);
+    batteryLevelChar.writeValue(batteryLevel);  // and update the battery level characteristic
+    oldBatteryLevel = batteryLevel;           // save the level for next comparison
+  }
+}
+
+
+void updateGyroscope() {
+//  if (IMU.gyroscopeAvailable()) {
+//    IMU.readGyroscope(x, y, z);
+//    
+//    String packet = String(x) + "," + String(y) + "," + String(z);
+//    packet.toCharArray(buf,32);
+//    Serial.println(packet);
+//   
+//    gyroscopeChar.writeValue(buf, 32);  // update the gyroscope characteristic
+//  }
+  if (IMU.accelerationAvailable()) {
+    IMU.readAcceleration(x, y, z);
+
+//    acc_x = map(x, -1.0, 1.0, 0.0, 180.0);
+//    acc_y = map(y, -1.0, 1.0, 0.0, 180.0);
+    acc_x = x*90;
+    acc_y = y*90;
+    acc_z = z*90;
+    
+    acc_y_buf[turn] = acc_y;
+    acc_z_buf[turn] = acc_z;
+    
+    String packet = String(acc_z) + "," + String(acc_y);
+    packet.toCharArray(buf,32);
+    Serial.println(packet);
+
+    for(int i=0; i<10; i++){  //buf에 들어있는 값이 모두 임계치를 넘을 때 진동 발생. 
+      if (abs(acc_y_buf[i]) < 30 && abs(acc_z_buf[i]) < 30) {
+        flag = false;
+        break;
+      }
+    }
+    if (flag){
+      //진동 모터
+      //세기에 따라 0~ 255까지 설정
+      analogWrite(11, 150);
+      delay(500);
+      analogWrite(11, 0);
+//      Serial.println("진동발생");
+    }
+    flag = true;
+    
+    
+    turn = turn + 1;
+    turn = turn % 10;
+    gyroscopeChar.writeValue(buf, 32);
+  }
+}
